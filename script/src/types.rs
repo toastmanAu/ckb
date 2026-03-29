@@ -628,6 +628,19 @@ impl Binaries {
     }
 }
 
+/// Shared cache for script binaries across transactions within the same block.
+///
+/// Keyed by data_hash (the hash of the cell data containing the script binary).
+/// Values are `LazyData` instances that may or may not have loaded the actual
+/// bytes yet. Since `LazyData` uses `Arc<RwLock<DataGuard>>`, sharing entries
+/// means a binary loaded for one transaction is immediately available to the next.
+pub type ScriptBinaryCache = Arc<Mutex<HashMap<Byte32, LazyData>>>;
+
+/// Creates a new empty script binary cache.
+pub fn new_script_binary_cache() -> ScriptBinaryCache {
+    Arc::new(Mutex::new(HashMap::new()))
+}
+
 /// Immutable context data at transaction level
 #[derive(Clone, Debug)]
 pub struct TxData<DL> {
@@ -665,12 +678,38 @@ impl<DL> TxData<DL>
 where
     DL: CellDataProvider,
 {
+    /// Creates a new TxData structure with an optional shared binary cache.
+    ///
+    /// When `binary_cache` is provided, LazyData instances are shared across
+    /// transactions, so a script binary loaded once is reused without hitting
+    /// RocksDB again.
+    pub fn new_with_binary_cache(
+        rtx: Arc<ResolvedTransaction>,
+        data_loader: DL,
+        consensus: Arc<Consensus>,
+        tx_env: Arc<TxVerifyEnv>,
+        binary_cache: Option<&ScriptBinaryCache>,
+    ) -> Self {
+        Self::new_inner(rtx, data_loader, consensus, tx_env, binary_cache)
+    }
+
     /// Creates a new TxData structure
+    /// Creates a new TxData structure (without shared binary cache)
     pub fn new(
         rtx: Arc<ResolvedTransaction>,
         data_loader: DL,
         consensus: Arc<Consensus>,
         tx_env: Arc<TxVerifyEnv>,
+    ) -> Self {
+        Self::new_inner(rtx, data_loader, consensus, tx_env, None)
+    }
+
+    fn new_inner(
+        rtx: Arc<ResolvedTransaction>,
+        data_loader: DL,
+        consensus: Arc<Consensus>,
+        tx_env: Arc<TxVerifyEnv>,
+        binary_cache: Option<&ScriptBinaryCache>,
     ) -> Self {
         let tx_hash = rtx.transaction.hash();
         let resolved_cell_deps = &rtx.resolved_cell_deps;
@@ -702,7 +741,18 @@ where
             let data_hash = data_loader
                 .load_cell_data_hash(cell_meta)
                 .expect("cell data hash");
-            let lazy = LazyData::from_cell_meta(cell_meta);
+
+            // Check shared binary cache first, fall back to creating new LazyData
+            let lazy = if let Some(cache) = binary_cache {
+                let mut cache_guard = cache.lock().expect("binary cache lock");
+                cache_guard
+                    .entry(data_hash.to_owned())
+                    .or_insert_with(|| LazyData::from_cell_meta(cell_meta))
+                    .clone()
+            } else {
+                LazyData::from_cell_meta(cell_meta)
+            };
+
             binaries_by_data_hash.insert(data_hash.to_owned(), (i, lazy.to_owned()));
 
             if let Some(t) = &cell_meta.cell_output.type_().to_opt() {

@@ -6,9 +6,9 @@ use crate::{
     syscalls::generator::generate_ckb_syscalls,
     type_id::TypeIdSystemScript,
     types::{
-        DebugPrinter, FullSuspendedState, Machine, RunMode, ScriptGroup, ScriptGroupType,
-        ScriptVersion, SgData, SyscallGenerator, TerminatedResult, TransactionState, TxData,
-        VerifyResult,
+        DebugPrinter, FullSuspendedState, Machine, RunMode, ScriptBinaryCache, ScriptGroup,
+        ScriptGroupType, ScriptVersion, SgData, SyscallGenerator, TerminatedResult,
+        TransactionState, TxData, VerifyResult,
     },
     verify_env::TxVerifyEnv,
 };
@@ -84,6 +84,38 @@ where
         Self::new_with_debug_printer(rtx, data_loader, consensus, tx_env, debug_printer)
     }
 
+    /// Create a script verifier with a shared binary cache for cross-transaction reuse.
+    ///
+    /// When verifying multiple transactions in the same block, pass the same
+    /// `ScriptBinaryCache` to each verifier. Script binaries loaded for one
+    /// transaction will be reused by subsequent transactions without hitting
+    /// RocksDB again.
+    pub fn new_with_binary_cache(
+        rtx: Arc<ResolvedTransaction>,
+        data_loader: DL,
+        consensus: Arc<Consensus>,
+        tx_env: Arc<TxVerifyEnv>,
+        binary_cache: &ScriptBinaryCache,
+    ) -> Self {
+        let debug_printer: DebugPrinter = Arc::new(
+            #[allow(unused_variables)]
+            |hash: &Byte32, message: &str| {
+                #[cfg(feature = "logging")]
+                debug!("script group: {} DEBUG OUTPUT: {}", hash, message);
+            },
+        );
+
+        Self::new_with_generator_and_cache(
+            rtx,
+            data_loader,
+            consensus,
+            tx_env,
+            generate_ckb_syscalls,
+            debug_printer,
+            Some(binary_cache),
+        )
+    }
+
     /// Create a script verifier using default CKB syscalls and a custom debug printer
     pub fn new_with_debug_printer(
         rtx: Arc<ResolvedTransaction>,
@@ -127,7 +159,34 @@ where
         syscall_generator: SyscallGenerator<DL, V, <M as DefaultMachineRunner>::Inner>,
         syscall_context: V,
     ) -> TransactionScriptsVerifier<DL, V, M> {
-        let tx_data = Arc::new(TxData::new(rtx, data_loader, consensus, tx_env));
+        Self::new_with_generator_and_cache(
+            rtx,
+            data_loader,
+            consensus,
+            tx_env,
+            syscall_generator,
+            syscall_context,
+            None,
+        )
+    }
+
+    /// Creates a script verifier with an optional shared binary cache.
+    pub fn new_with_generator_and_cache(
+        rtx: Arc<ResolvedTransaction>,
+        data_loader: DL,
+        consensus: Arc<Consensus>,
+        tx_env: Arc<TxVerifyEnv>,
+        syscall_generator: SyscallGenerator<DL, V, <M as DefaultMachineRunner>::Inner>,
+        syscall_context: V,
+        binary_cache: Option<&ScriptBinaryCache>,
+    ) -> TransactionScriptsVerifier<DL, V, M> {
+        let tx_data = Arc::new(TxData::new_with_binary_cache(
+            rtx,
+            data_loader,
+            consensus,
+            tx_env,
+            binary_cache,
+        ));
 
         TransactionScriptsVerifier {
             tx_data,
