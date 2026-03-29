@@ -1,0 +1,24 @@
+# Optimized RocksDB options for CKB node.
+#
+# Tuned for CKB's block processing workload on a modern multi-core system
+# with ample RAM. See experiments/rocksdb-tuning/EXPERIMENT.md for rationale.
+#
+# Key changes from default:
+#   - 64MB write buffers (8x default) — reduce flush frequency
+#   - 4 write buffers (2x default) — absorb flush stalls
+#   - 12 background jobs (2x default) — utilize multi-core for compaction
+#   - 512MB WAL (4x default) — allow larger write batches
+#   - Merge 2 buffers before flush — reduce write amplification
+
+[DBOptions]
+bytes_per_sync=2097152
+max_background_jobs=12
+max_total_wal_size=536870912
+keep_log_file_num=32
+
+[CFOptions "default"]
+level_compaction_dynamic_level_bytes=true
+write_buffer_size=67108864
+min_write_buffer_number_to_merge=2
+max_write_buffer_number=4
+max_write_buffer_size_to_maintain=-1
